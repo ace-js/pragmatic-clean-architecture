@@ -1,5 +1,6 @@
 using Bookify.Application.Abstractions.Clock;
 using Bookify.Application.Abstractions.Messaging;
+using Bookify.Application.Exceptions;
 using Bookify.Domain.Abstractions;
 using Bookify.Domain.Apartments;
 using Bookify.Domain.Bookings;
@@ -7,7 +8,7 @@ using Bookify.Domain.Users;
 
 namespace Bookify.Application.Bookings.ReserveBooking;
 
-internal sealed class ReserveBookingCommandHandler: ICommandHandler<ReserveBookingCommand, Guid>
+internal sealed class ReserveBookingCommandHandler : ICommandHandler<ReserveBookingCommand, Guid>
 {
     private readonly IUserRepository _userRepository;
     private readonly IApartmentRepository _apartmentRepository;
@@ -17,9 +18,9 @@ internal sealed class ReserveBookingCommandHandler: ICommandHandler<ReserveBooki
     private readonly PricingService _pricingService;
 
     public ReserveBookingCommandHandler(
-        IUserRepository userRepository, 
-        IApartmentRepository apartmentRepository, 
-        IBookingRepository bookingRepository,  
+        IUserRepository userRepository,
+        IApartmentRepository apartmentRepository,
+        IBookingRepository bookingRepository,
         IUnitOfWork unitOfWork,
         IDateTimeProvider dateTimeProvider,
         PricingService pricingService)
@@ -31,7 +32,7 @@ internal sealed class ReserveBookingCommandHandler: ICommandHandler<ReserveBooki
         _dateTimeProvider = dateTimeProvider;
         _pricingService = pricingService;
     }
-    
+
     public async Task<Result<Guid>> Handle(ReserveBookingCommand request, CancellationToken cancellationToken)
     {
         var user = await _userRepository.GetByIdAsync(request.UserId);
@@ -42,7 +43,7 @@ internal sealed class ReserveBookingCommandHandler: ICommandHandler<ReserveBooki
         }
 
         var apartment = await _apartmentRepository.GetByIdAsync(request.ApartmentId);
-        
+
         if (apartment is null)
         {
             return Result.Failure<Guid>(ApartmentErrors.NotFound);
@@ -55,17 +56,24 @@ internal sealed class ReserveBookingCommandHandler: ICommandHandler<ReserveBooki
             return Result.Failure<Guid>(BookingErrors.Overlap);
         }
 
-        var booking = Booking.Reserve(
-            apartment,
-            user.Id,
-            duration,
-            _dateTimeProvider.UtcNow,
-            _pricingService);
-        
-        _bookingRepository.Add(booking);
+        try
+        {
+            var booking = Booking.Reserve(
+                apartment,
+                user.Id,
+                duration,
+                _dateTimeProvider.UtcNow,
+                _pricingService);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+            _bookingRepository.Add(booking);
 
-        return booking.Id;
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return booking.Id;
+        }
+        catch (ConcurrencyException)
+        {
+            return Result.Failure<Guid>(BookingErrors.Overlap);
+        }
     }
 }
